@@ -89,6 +89,15 @@ public:
     // printlog();
   }
 
+  void send()
+  {
+    udp_->send((uint8_t*)&armCmd, ARM_CMD_LENGTH);
+  }
+
+  void recv()
+  {
+    udp_->recv((uint8_t*)&armState, ARM_STATE_LENGTH);
+  }
   /**
    * @brief Clear the running error.
    * 

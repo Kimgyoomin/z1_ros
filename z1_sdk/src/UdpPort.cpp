@@ -114,88 +114,138 @@ size_t UdpPort::recvLen(uint8_t* recvMsg, size_t recvLength)
   return recvfrom(socket_fd_, recvMsg, recvLength, MSG_DONTWAIT, (struct sockaddr*)&fromAddr_, &sockaddrSize_);
 }
 
+/* 수정 중에 있어서 이거 주석처리함 */
+// IOPortStatus UdpPort::recv(uint8_t *recvMsg, size_t recvLength)
+// {
+//   /* non-blocking receiving */
+//   size_t received_len = 0;
 
-IOPortStatus UdpPort::recv(uint8_t *recvMsg, size_t recvLength)
-{
-  /* non-blocking receiving */
-  size_t received_len = 0;
+//   /* The _rSet will be modified and must be initialized each time */
+//   fd_set rset;
+//   FD_ZERO(&rset);
+//   FD_SET(socket_fd_, &rset);
+//   timeval timeout_select = timeout_saved_;
+//   switch (select(socket_fd_+1, &rset, NULL, NULL, &timeout_select))
+//   {
+//   case -1: // receive error
+//     return IOPortStatus::err;
+//   case 0: // timeout once
+//     if(isConnect_)
+//     {
+//       if(timer_.wait_time()< 0)
+//       {
+//         isConnect_ = false;
+//         std::cout << "[ERROR] Lose connection with UDP "<< name_ << std::endl;
 
-  /* The _rSet will be modified and must be initialized each time */
+//         // Reset the destination port after disconnection
+//         // for switching between addresses on one server
+//         if(isServer_) {
+//           targetAddr_.sin_port = htons(0);
+//         }
+//       }else{
+//         // std::cout << "[WARNING] UDPPort::recv, connect with "<< name_ <<" wait time out" << std::endl;
+//       }
+//     }
+//     return IOPortStatus::timeout;
+//   default:
+//     timer_.start(); // Update connection
+    
+//     /* Clear receiving cache */
+//     timeout_select.tv_sec = 0;
+//     timeout_select.tv_usec = 0;
+
+//     fd_set fdClearBuf;
+//     FD_ZERO(&fdClearBuf);
+//     FD_SET(socket_fd_, &fdClearBuf);
+//     while (1)
+//     {
+//       // Known data currently exists, keep reading until there is no more data, take the latest data
+//       if(select(socket_fd_+1, &rset, NULL, NULL, &timeout_select) <= 0) {
+//         break;
+//       }
+//       received_len = recvfrom(socket_fd_, _recvBuff.data(), recvLength, MSG_DONTWAIT,
+//                               (struct sockaddr*)&fromAddr_, &sockaddrSize_);
+//     }
+    
+//     // Reconnect
+//     if(!isConnect_)
+//     {
+//       isConnect_ = true;
+//       std::cout << "[Report] Re-establish the connection with UDP "<< name_ << std::endl;
+//     }
+
+//     /* Check receiving length */
+//     if(received_len == recvLength)
+//     {
+//       // If CRC checksum has open and error detected, discard data, otherwise copy directly
+//       if(crc32_open_ && !check_crc32(_recvBuff.data(), received_len))
+//       {
+//         return IOPortStatus::crcbad;
+//       }else{
+//         memcpy(recvMsg, _recvBuff.data(), received_len);
+//         // If target port has not been initialized, the send to where data from
+//         if(ntohs(targetAddr_.sin_port) <= 0) {
+//           targetAddr_ = fromAddr_;
+//         }
+//         return IOPortStatus::ok;
+//       }
+//     }else{
+//       std::cout << "[WARNING] UDP "<< name_ <<" received " << received_len
+//               << " bytes, but not " << recvLength << " bytes."<< std::endl;
+//       return IOPortStatus::msgbad;
+//     }
+//     break;
+//   }
+//   return IOPortStatus::err;
+// }
+
+/* 올바르게 수정한 함수, timeout_select.tv_usec 값 바꿔보면서 데이터 얻을 것 */
+IOPortStatus UdpPort::recv(uint8_t *recvMsg, size_t recvLength) {
+  // Socket setting with Nonblocking Mode
+  // fcntl(socket_fd_, F_SETFL, O_NONBLOCK);
+
+  // To check socket condition, initialize fd_set
   fd_set rset;
   FD_ZERO(&rset);
   FD_SET(socket_fd_, &rset);
-  timeval timeout_select = timeout_saved_;
-  switch (select(socket_fd_+1, &rset, NULL, NULL, &timeout_select))
-  {
-  case -1: // receive error
+
+  // Timeout setting ( 1 ms )
+  timeval timeout_select;
+  timeout_select.tv_sec = 0; // s param
+  timeout_select.tv_usec = 900; // micro s param
+
+  // Use select func to check socket condition
+  int selectResult = select(socket_fd_ + 1, &rset, NULL, NULL, &timeout_select);
+  if (selectResult < 0) {
+    // Err occur while calling select
     return IOPortStatus::err;
-  case 0: // timeout once
-    if(isConnect_)
-    {
-      if(timer_.wait_time()< 0)
-      {
-        isConnect_ = false;
-        std::cout << "[ERROR] Lose connection with UDP "<< name_ << std::endl;
-
-        // Reset the destination port after disconnection
-        // for switching between addresses on one server
-        if(isServer_) {
-          targetAddr_.sin_port = htons(0);
-        }
-      }else{
-        // std::cout << "[WARNING] UDPPort::recv, connect with "<< name_ <<" wait time out" << std::endl;
-      }
-    }
+  } else if (selectResult == 0) {
+    // Timeout occur ( Data don't arrive in setting time )
     return IOPortStatus::timeout;
-  default:
-    timer_.start(); // Update connection
-    
-    /* Clear receiving cache */
-    timeout_select.tv_sec = 0;
-    timeout_select.tv_usec = 0;
+  }
 
-    fd_set fdClearBuf;
-    FD_ZERO(&fdClearBuf);
-    FD_SET(socket_fd_, &fdClearBuf);
-    while (1)
-    {
-      // Known data currently exists, keep reading until there is no more data, take the latest data
-      if(select(socket_fd_+1, &rset, NULL, NULL, &timeout_select) <= 0) {
-        break;
-      }
-      received_len = recvfrom(socket_fd_, _recvBuff.data(), recvLength, MSG_DONTWAIT,
-                              (struct sockaddr*)&fromAddr_, &sockaddrSize_);
-    }
-    
-    // Reconnect
-    if(!isConnect_)
-    {
-      isConnect_ = true;
-      std::cout << "[Report] Re-establish the connection with UDP "<< name_ << std::endl;
+  // Try Data receiving
+  ssize_t received_len = recvfrom(socket_fd_, recvMsg, recvLength, 0, (struct sockaddr*)&fromAddr_, &sockaddrSize_);
+  if (received_len > 0)
+  {
+    // If received data yes
+    if (crc32_open_ && !check_crc32(recvMsg, received_len)) {
+      // CRC checksum err
+      return IOPortStatus::crcbad;
     }
 
-    /* Check receiving length */
-    if(received_len == recvLength)
-    {
-      // If CRC checksum has open and error detected, discard data, otherwise copy directly
-      if(crc32_open_ && !check_crc32(_recvBuff.data(), received_len))
-      {
-        return IOPortStatus::crcbad;
-      }else{
-        memcpy(recvMsg, _recvBuff.data(), received_len);
-        // If target port has not been initialized, the send to where data from
-        if(ntohs(targetAddr_.sin_port) <= 0) {
-          targetAddr_ = fromAddr_;
-        }
-        return IOPortStatus::ok;
-      }
-    }else{
-      std::cout << "[WARNING] UDP "<< name_ <<" received " << received_len
-              << " bytes, but not " << recvLength << " bytes."<< std::endl;
+    if (static_cast<size_t>(received_len) == recvLength){
+      // Received data length is equal as expected
+      return IOPortStatus::ok;
+    } else {
+      // Received data length isn't equal as expected
       return IOPortStatus::msgbad;
     }
-    break;
+  } else if (received_len == 0) {
+    // Data doesn't came along
+    return IOPortStatus::timeout;
+  } else {
+    // err occur while calling recvfrom
+    return IOPortStatus::err;
   }
-  return IOPortStatus::err;
 }
-
