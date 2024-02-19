@@ -11,11 +11,17 @@
 #include <eigen3/Eigen/Dense>
 #include <atomic>
 #include <pthread.h>
+#include <mutex>
+#include <condition_variable>
 
 // 전역변수로 UNITREE_ARM_SDK::UnitreeArm 객체와 동기화에 필요한 변수 선언
 UNITREE_ARM_SDK::UnitreeArm* z1Ptr;
 std::vector<double> save_ref5, save_enc5, save_ref4, save_enc4; // 값 저장을 위한 벡터
 using std::ofstream;
+
+std::mutex mtx; // 데이터 버퍼 접근을 위한 뮤텍스
+std::condition_variable cv; // 조건 변수
+bool data_ready = false; // 데이터 준비 상태 플래그
 
 
 void* recvsendData(void* arg) {
@@ -24,6 +30,8 @@ void* recvsendData(void* arg) {
   Vec6 q = z1Ptr->armState.getQ_d();
   
   while(1) {
+    std::lock_guard<std::mutex> lk(mtx); // 뮤텍스 잠금
+
     z1Ptr->armCmd.mode = (mode_t)UNITREE_ARM_SDK::ArmMode::JointPositionCtrl;
     auto start = std::chrono::high_resolution_clock::now();
     z1Ptr->recv();
@@ -43,9 +51,9 @@ void* recvsendData(void* arg) {
     save_ref4.push_back(q(4));
     save_enc4.push_back(z1Ptr->armState.q[4]);
 
-    // usleep(4000); // 4000 microseconds
     auto next_cycle = start + std::chrono::milliseconds(4);
     std::this_thread::sleep_until(next_cycle);
+
     if (cnt >= 1250) {
       z1Ptr->armCmd.mode = (mode_t)UNITREE_ARM_SDK::ArmMode::Passive;
       z1Ptr->sendRecv();
@@ -53,19 +61,34 @@ void* recvsendData(void* arg) {
     }
     cnt++;
   }
+  // 데이터 수집 완료 후 신호 전송
+  {
+    std::lock_guard<std::mutex> lk(mtx);
+    data_ready = true;
+    cv.notify_one(); // 데이터 준비 신호 보내기
+  }
+
+
   return NULL;
 }
 
-// void saveDataToFile() {
-//   // 파일 입출력문 불러오기
-//   std::ofstream file("/home/kim/rc_lab_datafoldeer/240219_1.txt");
-//   for (size_t i = 0; i < save_ref5.size(); ++i) {
-//     file << std::fixed << std::setprecision(6) << save_ref5[i]
-//     << "\t" << save_enc5[i] << "\t" << save_ref4[i] << "\t" << save_enc4[i]
-//     << std::endl;
-//   }
-//   file.close();
-// }
+void* printData(void* arg) {
+  std::unique_lock<std::mutex> lk(mtx);
+  cv.wait(lk, []{return data_ready; }); // 데이터 준비될때까지 대기
+
+  // 파일에 저장
+  std::ofstream file("/home/kim/rc_lab_datafolder/240219_2.txt");
+  for (size_t i = 0; i < 1250; ++i)
+  {
+    file << std::fixed << std::setprecision(6) << save_ref5[i]
+    << "\t" << save_enc5[i] << "\t" << save_ref4[i] << "\t" << save_enc4[i]
+    << std::endl;
+  }
+  file.close();
+
+  return NULL;
+}
+
 
 int main(int argc, char** argv)
 {
@@ -77,30 +100,20 @@ int main(int argc, char** argv)
   z1Ptr->init();
 
   /* For p_thread */
-  pthread_t recvsendThread;
-  pthread_create(&recvsendThread, NULL, recvsendData, NULL);
+  pthread_t threadCtrl, threadSave;
 
-  pthread_join(recvsendThread, NULL); // 이 쓰레드가 종료될때까지 대기
+  pthread_create(&threadCtrl, NULL, recvsendData, NULL);
+  pthread_create(&threadSave, NULL, printData, NULL);
 
-  /* 작업 끝난 후 arm모드를 Passive로 변경 */
-  // z1.armCmd.mode = (mode_t)UNITREE_ARM_SDK::ArmMode::Passive;
-  // z1.sendRecv();
-
-  std::ofstream file("/home/kim/rc_lab_datafolder/240219_1.txt");
-  for (size_t i = 0; i < 1250; ++i)
-  {
-    file << std::fixed << std::setprecision(6) << save_ref5[i]
-    << "\t" << save_enc5[i] << "\t" << save_ref4[i] << "\t" << save_enc4[i]
-    << std::endl;
-  }
-  file.close();
-  // saveDataToFile(); // 스레드 완료 후 데이터 저장 함수 실행
+  pthread_join(threadCtrl, NULL); // 이 쓰레드가 종료될때까지 대기
+  pthread_join(threadSave, NULL);
 
   /* 전체 실행 시간 확인 */
   auto end = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double, std::milli> execution_time = end - start_m;
   std::cout << "Execution Time (chrono) " << execution_time.count() << "ms"
   << std::endl;
+
 
   return 0;
 }
